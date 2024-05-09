@@ -24,6 +24,8 @@
 #include <stdlib.h>
 #include <QtCore/QObject>
 #include <QtCore/QSettings>
+#include <QtCore/QProcess>
+#include <QtCore/QVariant>
 #include <QtQml/qqml.h>
 #include <QtQml/qjsengine.h>
 #include <QtQml/qjsvalue.h>
@@ -705,6 +707,44 @@ SWIZZLE(void, _ZN5BDbus4NodeC2ERKNSt7__cxx1112basic_stringIcSt11char_traitsIcESa
 
 #endif
 
+/* QProcess class for running shell from QML a bit more reliably */
+class Process : public QProcess
+{
+    Q_OBJECT
+public:
+    explicit Process( QObject* parent = Q_NULLPTR ) : QProcess( parent ) { }
+
+    /* Run with arguments */
+    Q_INVOKABLE void start( const QString& program, const QVariantList& arguments )
+    {
+        QStringList args;
+
+        for ( const auto& temp : arguments ) {
+            args << temp.toString();
+        }
+
+        QProcess::setProcessChannelMode( QProcess::MergedChannels );
+        QProcess::start( program, args );
+    }
+
+    /* Run without arguments */
+    Q_INVOKABLE void start( const QString& program )
+    {
+
+        QProcess::setProcessChannelMode( QProcess::MergedChannels );
+        QProcess::setProgram( program );
+        QProcess::start();
+        QProcess::open( QProcess::ReadWrite );
+    }
+
+    Q_INVOKABLE QByteArray readAll() { return QProcess::readAll(); }
+    Q_INVOKABLE QByteArray readLine() { return QProcess::readLine(); }
+
+
+private:
+    Q_DISABLE_COPY( Process )
+};
+
 /*** Tricks to override the backlight.  See X1PlusNative.updateBacklight above. ***/
 
 FILE *backlight_fp = NULL;
@@ -903,6 +943,7 @@ extern "C" void __attribute__ ((constructor)) init() {
         scriptEngine->globalObject().setProperty("_DdsListener", obj);
         return obj;
     });
+    qmlRegisterType<Process>("com.example", 1, 0, "Process");
 #ifdef HAS_DBUS
     qmlRegisterSingletonType("DBusListener", 1, 0, "DBusListener", [](QQmlEngine *engine, QJSEngine *scriptEngine) -> QJSValue {
         Q_UNUSED(engine)
