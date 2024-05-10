@@ -25,7 +25,7 @@
 #include <QtCore/QObject>
 #include <QtCore/QSettings>
 #include <QtCore/QProcess>
-#include <QtCore/QVariant>
+#include <QtCore/QVariantList>
 #include <QtQml/qqml.h>
 #include <QtQml/qjsengine.h>
 #include <QtQml/qjsvalue.h>
@@ -712,7 +712,11 @@ class Process : public QProcess
 {
     Q_OBJECT
 public:
-    explicit Process( QObject* parent = Q_NULLPTR ) : QProcess( parent ) { }
+    explicit Process( QObject* parent = Q_NULLPTR ) : QProcess( parent ) { 
+        connect(this, &QProcess::started, this, &Process::handleStarted);
+        connect(this, SIGNAL(finished(int, QProcess::ExitStatus)), this, SLOT(handleFinished(int, QProcess::ExitStatus)));
+        connect(this, &QProcess::errorOccurred, this, &Process::handleError);
+    }
 
     /* Run with arguments */
     Q_INVOKABLE void start( const QString& program, const QVariantList& arguments )
@@ -739,7 +743,25 @@ public:
 
     Q_INVOKABLE QByteArray readAll() { return QProcess::readAll(); }
     Q_INVOKABLE QByteArray readLine() { return QProcess::readLine(); }
+    
+    Q_INVOKABLE void terminate() {
+        if (QProcess::state() == QProcess::Running) {
+            QProcess::terminate();
+            if (!QProcess::waitForFinished(3000)) {
+                QProcess::kill();
+            }
+        }
+    }
 
+signals:
+    void started();
+    void finished(int exitCode, QProcess::ExitStatus exitStatus);
+    void errorOccurred(QProcess::ProcessError error);
+
+private slots:
+    void handleStarted() { emit started(); }
+    void handleFinished(int exitCode, QProcess::ExitStatus exitStatus) { emit finished(exitCode, exitStatus); }
+    void handleError(QProcess::ProcessError error) { emit errorOccurred(error); }
 
 private:
     Q_DISABLE_COPY( Process )
@@ -943,7 +965,7 @@ extern "C" void __attribute__ ((constructor)) init() {
         scriptEngine->globalObject().setProperty("_DdsListener", obj);
         return obj;
     });
-    qmlRegisterType<Process>("com.example", 1, 0, "Process");
+    qmlRegisterType<Process>("Process", 1, 0, "Process");
 #ifdef HAS_DBUS
     qmlRegisterSingletonType("DBusListener", 1, 0, "DBusListener", [](QQmlEngine *engine, QJSEngine *scriptEngine) -> QJSValue {
         Q_UNUSED(engine)

@@ -5,6 +5,7 @@ import QtQuick.VirtualKeyboard 2.1
 import X1PlusNative 1.0
 import UIBase 1.0
 import Printer 1.0
+import Process 1.0
 import '../X1Plus.js' as X1Plus
 import "../printer"
 import "qrc:/uibase/qml/widgets"
@@ -12,9 +13,8 @@ import ".."
 
 Item {
     id: consoleComp
-    property var cmdHistory:[]
-    property int historyIndex: 0
-
+    property var cmdHistory:[[],[]]
+    property var idx: -1
     property bool gcodeConsole: DeviceManager.getSetting("cfw_default_console",false)
     property alias inputText: inputTextBox.text
     property bool printing: PrintManager.currentTask.stage >= PrintTask.WORKING
@@ -208,7 +208,7 @@ Item {
     MarginPanel {
         id: outputPanel
         width: 1130
-        height: parent.height - 80 - 150
+        height: parent.height-80 - 150
         anchors.left: parent.left
         anchors.top:  inputPanel.bottom
         anchors.right: parent.right
@@ -234,7 +234,7 @@ Item {
             clip: true
             TextArea {
                 id: outputTextArea
-                width: 1130 /* parent.width, but avoiding a binding loop */ - 56
+                width: 1130 - 56
                 textFormat: Qt.PlainText //RichText is way too slow on the printer
                 readOnly: true
                 font: outputText.length == 0 ? Fonts.body_24 : Fonts.body_18
@@ -264,7 +264,9 @@ Item {
 
                 placeholderTextColor: Colors.gray_300
             }
-            function scroll(contentOffset){
+            
+            function scroll(){
+                var contentOffset = outputText == "" ? 0 : outputTextArea.contentHeight;
                 // NB: future versions of Qt Quick will have to use flickableItem here, not contentItem
                 var maxOffset = outputTextArea.topPadding + outputTextArea.contentHeight + outputTextArea.bottomPadding - height;
                 if (maxOffset < 0)
@@ -312,18 +314,19 @@ Item {
             clip:true
             delegate: Item {
                 id: itm
-                width: (index == 0) ? 100 : gcodeConsole ? 130 : (index < 8) ? 70 : 130
-                height: hotkeysList.height
+                width: (index == 0) ? 100 : gcodeConsole ? 130 : (index < 9) ? 70 : 130
+                height: parent.height
                 ZButton {
+                    id: hotkeyBtn
                     text: gcodeConsole ? modelData.name : modelData
                     width: parent.width
-                    height: hotkeysList.height-10
+                    height: hotkeysList.height - 10
                     type: ZButtonAppearance.Tertiary
                     textSize: 26
                     textColor: Colors.gray_300
                     backgroundColor: "transparent_pressed"
                     borderColor: "transparent"
-                    //cornerRadius: width / 2
+                    //cornerRadius: width / 2 
                     onClicked: {
                         if (index == 0 ){
                             navigateHistory();
@@ -356,10 +359,15 @@ Item {
         }
     }
     function navigateHistory() {
-        if (cmdHistory.length === 0) return;
-        historyIndex = (historyIndex - 1 + cmdHistory.length) % cmdHistory.length;
-        inputText = cmdHistory[historyIndex];
+        if (gcodeConsole) {
+            idx = Math.max(idx - 1, 0);
+            inputText = cmdHistory[0][idx] || "";
+        } else {   
+            idx = Math.max(idx - 1, 0);
+            inputText = cmdHistory[1][idx] || "";
+        }
     }
+
     function timestamp(offset){
         const now = new Date();
         now.setDate(now.getDate()-offset);
@@ -371,22 +379,30 @@ Item {
         const ms = now.getSeconds().toString().padStart(2,'0');
         return hrs + mins + ms;
     }
+    
     function sendCommand(str){
         try {
             if (gcodeConsole) {
                 console.log("[x1p] publishing gcode ", str);
                 X1Plus.sendGcode(str);
-                cmdHistory.push(str);
-                return str;
+                cmdHistory[0].push(str);
+                idx = cmdHistory[0].length;
+
             } else {
-                let rs = X1PlusNative.popen(`${str}`);
-                console.log("[x1p] executed command ", rs);
-                cmdHistory.push(str);
-                return rs;
+                var inputCmd = str.replace(/\\n/g, '\n  ');
+                let commandParts = inputCmd.split(' ')
+                if (commandParts.length > 0) {
+                    let command = commandParts[0]
+                    let args = commandParts.slice(1)
+                    shellProcess.start(command,args)
+                    cmdHistory[1].push(inputCmd);
+                    idx = cmdHistory[1].length;
+                }
             }
+            return true;
         } catch (e) {
             console.log("[x1p] error executing command", e);
-            return "";
+            return false;
         }
     }
 
@@ -433,8 +449,8 @@ Item {
                     outputText = "";
                     inputText = "";
                     DeviceManager.putSetting("cfw_default_console", gcodeConsole);
-                    cmdHistory = [];
-                    historyIndex = 0;
+                   
+                    idx = 0;
                 }
             }
             
@@ -460,7 +476,7 @@ Item {
             height: 80
             anchors.left: consoleToggle.right
             anchors.leftMargin: 0 - leftInset + 15
-            anchors.right: enterBtn.left
+            anchors.right: buttonPanel.left
             anchors.rightMargin:20 - rightInset
             font: Fonts.body_28
             color: Colors.gray_200
@@ -474,6 +490,7 @@ Item {
             placeholderText: gcodeConsole ? qsTr("enter a G-code command")
                                       : qsTr("enter a shell command to run as root")
             placeholderTextColor: Colors.gray_400
+            property var hIndex: -1
             background: Rectangle {
                 color: Colors.gray_800
                 radius: height / 4
@@ -484,81 +501,128 @@ Item {
                 value: inputText
             }
         }
-
-        ZButton { 
-            id: enterBtn
-            icon: "../../icon/components/console_enter.svg"
-            type: ZButtonAppearance.Secondary
-            anchors.right: exportBtn.left 
-            anchors.rightMargin: 10
-            anchors.verticalCenter:inputPanel.verticalCenter
-            iconSize: 80
-            width: 60
-            //cornerRadius: width / 2
-            property string out
-            onClicked: {
-                if (printing && !ignoreDialog) {
-                    dialogStack.popupDialog(
-                        "TextConfirm", {
-                            name: "Limit Frame",
-                            type: TextConfirm.YES_NO_CANCEL,
-                            titles: [qsTr("Home"), qsTr("Ignore"), qsTr("Close")],
-                            text: qsTr("Printer is busy! Are you sure you want to publish this command? Press ignore to hide this message."),
-                            onNo: function() {ignoreDialog = true},
-                            OnCancel: function () {return},
-                    }); 
-                }
-                var inputCmd = inputText.trim();
-                if (inputCmd.length <1) return;
-                inputCmd = inputCmd.replace(/\\n/g, '\n  ');
-                let response = sendCommand(inputCmd);
-                if (response !== "") {
-                    if (gcodeConsole) {
-                        out = qsTr(">Gcode command published to device\n  ");
-                    } else {
-                        out = response;
-                    }
-                    if (outputText != "") outputText += "\n\n";
-                    var origHeight = outputText == "" ? 0 : outputTextArea.contentHeight;
-                    var ts = timestamp(0) + "[root]:";
-                    outputText += ts + inputCmd  + "\n" + out;
-                    inputText = "";
-                    termScroll.scroll(origHeight);
-                }                
+        Shortcut {
+            sequences: ["Stop", "Ctrl+D"]
+            onActivated: {
+                shellProcess.terminate();
             }
         }
-
-
-        ZButton{
-            id:exportBtn
-            icon:"../../icon/components/export.svg"
-            iconSize: 50
-            width: 50
-
-            anchors.right:parent.right
-            anchors.rightMargin:26
-            anchors.top:parent.top
-            anchors.topMargin:12
-            type: ZButtonAppearance.Secondary
-            onClicked: {
-    
-                dialogStack.popupDialog(
-                        "TextConfirm", {
-                            name: gcodeConsole ? qsTr("Export console log"):qsTr("Export Gcode macro"),
-                            type: TextConfirm.YES_NO,
-                            defaultButton: 0,
-                            text: qsTr("Export console output to a log file?"),
-                            onYes: function() {
-                                if (gcodeConsole) {
-                                    pathDialog(`/mnt/sdcard/x1plus/gcode_${timestamp(0)}.log`,savePath);                 
-                                } else {
-                                    pathDialog(`/mnt/sdcard/x1plus/console_${timestamp(0)}.log`,savePath);                 
-                                }
-                                                        
-                            },
-                        })
+        
+        Component.onCompleted: {
+            
+        }
+        Component.onDestruction: {
+            shellProcess.terminate()
+        }
+        
+        Process {
+            id: shellProcess
+            property string output: ""
+            onStarted: {
+                console.log("Running process");
             }
-        }        
+            onFinished:{
+                console.log("Process finished with exit code:", exitCode, "and status:", exitStatus)
+                outputText += `Finished with exit code ${exitCode} and status ${exitStatus}`
+                termScroll.scroll();
+            }
+            onErrorOccurred: {
+                console.log("Error Ocuured: ", error)
+                outputText += error
+                termScroll.scroll();
+            }
+            
+            onReadyReadStandardOutput: {
+                output = shellProcess.readAll();
+                outputText += output;
+                termScroll.scroll();
+                console.log(output);
+            }
+        }
+        
+        Rectangle { 
+            id: buttonPanel
+            anchors.right: parent.right
+            anchors.top: parent.top
+            width: 140
+
+            property string out
+            
+            Rectangle {
+                id: enterBtn
+                width: 70 
+                height: 70
+                color: "transparent"
+                anchors.right: stopBtn.left
+                anchors.leftMargin: 15
+                ZImage {
+                    width: 70 
+                    height: 70
+                    anchors.fill:parent
+                    fillMode: Image.PreserveAspectFit 
+                    originSource:  "../../icon/start.svg"
+                    tintColor:  Colors.gray_300
+                }
+                MouseArea {
+                    anchors.fill: parent
+                    onClicked: {
+                        if (printing && !ignoreDialog) {
+                        dialogStack.popupDialog(
+                            "TextConfirm", {
+                                name: "Limit Frame",
+                                type: TextConfirm.YES_NO_CANCEL,
+                                titles: [qsTr("Home"), qsTr("Ignore"), qsTr("Close")],
+                                text: qsTr("Printer is busy! Are you sure you want to publish this command? Press ignore to hide this message."),
+                                onNo: function() {ignoreDialog = true},
+                                OnCancel: function () {return},
+                        }); 
+                    }
+                    let t = timestamp(0);
+                    var rootStr = qsTr("root");
+                    var inputCmd = inputText.trim();
+                    let inputLine = `[${rootStr}@BL-P001]: ${inputCmd}\n`;
+                    outputText += inputLine;
+                    if (inputCmd.length <1) return;
+                    inputCmd = inputCmd.replace(/\\n/g, '\n  ');
+
+                    let resp = sendCommand(inputCmd);
+                    if (resp){
+                        outputText += (gcodeConsole) ? qsTr(">Gcode command published to device\n  ") : ""
+                    }
+                    inputCmd = "";
+                    var origHeight = outputText == "" ? 0 : outputTextArea.contentHeight;
+
+                    inputText = "";  
+                    }
+                    onEntered: parent.opacity = 0.8
+                    onExited: parent.opacity = 1.0
+                }
+            }
+            Rectangle {
+                id: stopBtn
+                color: "transparent"
+                width: 70 
+                height: 70
+                anchors.right: parent.right
+                ZImage {
+                    width: 70 
+                    height: 70
+                    anchors.fill:parent
+                    fillMode: Image.PreserveAspectFit 
+                    originSource:  "../../icon/stop.svg"
+                    tintColor:  Colors.gray_300
+                }
+                MouseArea {
+                    anchors.fill: parent
+                    onClicked: {
+                        shellProcess.terminate();
+                    }
+                    onEntered: parent.opacity = 0.8
+                    onExited: parent.opacity = 1.0
+                }
+            }
+        }
+          
     }
 
     function pathDialog(inputtxt){
@@ -590,6 +654,7 @@ Item {
         X1PBackButton {
             id: backBtn
             onClicked: { 
+                shellProcess.terminate();
                 consoleComp.parent.pop();
             }
         }
